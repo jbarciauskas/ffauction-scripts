@@ -1,4 +1,5 @@
 import csv
+from math import floor
 import sys
 
 
@@ -8,6 +9,7 @@ class Player:
         self.projected_points = 0
         self.starter_vbd = 0
         self.bench_vbd = 0
+        self.base_price= 0
 
     def init_from_row(self, row):
         self.team = row['team']
@@ -31,13 +33,13 @@ class Player:
     def calc_points(self, scoring):
         self.projected_points = 0
         for action in scoring:
-            print(action)
             self.projected_points += getattr(self, action, 0) * scoring[action]
 
     def __str__(self):
-        return "%s\t%s\t%s\t%f\t%f\t%f" % (self.name, self.position, self.team,
-                                           self.projected_points,
-                                           self.starter_vbd, self.bench_vbd)
+        return "%s\t%s\t%s\t%f\t%f\t%f\t%f" % (self.name, self.position,
+                                               self.team, self.projected_points,
+                                               self.starter_vbd, self.bench_vbd,
+                                               self.base_price)
 
 
 class PlayerSet:
@@ -47,6 +49,9 @@ class PlayerSet:
         self.WR = []
         self.TE = []
         pass
+
+    def get_all(self):
+        return self.QB + self.RB + self.WR + self.TE
 
     # @TODO Add other flex types
     def get_flex(self, flex_type, qb, rb, wr, te, flex):
@@ -62,9 +67,18 @@ class PlayerSet:
     def get_top_n(self, position_counts):
         top_n = {}
         for position in ["QB", "RB", "WR", "TE"]:
-            print(position_counts[position])
-            top_n[position] = getattr(self, position)[:int(position_counts[position])]
+            top_n[position] = (getattr(self, position)
+                               [:int(position_counts[position])])
         return top_n
+
+    def get_bench(self, league):
+        starter_counts = league.get_starting_spots(self)
+        roster_counts = league.get_roster_spots(starter_counts)
+        bench_players = {}
+        for position in ["QB", "RB", "WR", "TE"]:
+            bench_players[position] = (getattr(self, position)
+                                       [starter_counts[position] - 1:roster_counts[position]])
+        return bench_players
 
     def calc_projected_points(self, scoring):
         for list_of_players in [self.QB, self.RB, self.WR, self.TE]:
@@ -73,6 +87,7 @@ class PlayerSet:
         for list_of_players in [self.QB, self.RB, self.WR, self.TE]:
             list_of_players.sort(key=lambda player: player.projected_points,
                                  reverse=True)
+
 
     def load_projection_stats_from_csv(self, csvFilename):
         with open(csvFilename) as statsFile:
@@ -153,15 +168,19 @@ class League:
         roster_spots = {}
         total_bench_size = self.bench * self.num_teams
         total_starters = 0
-        for position in starter_counts:
+        for position in ["QB", "RB", "WR", "TE"]:
             total_starters += starter_counts[position]
 
-        for position in starter_counts:
-            roster_spots[position] = (starter_counts[position]
-                                      + (starter_counts[position]
-                                         / total_starters * total_bench_size))
+        for position in ["QB", "RB", "WR", "TE"]:
+            roster_spots[position] = int(floor(starter_counts[position]
+                                               + (float(starter_counts[position])
+                                                  / float(total_starters)
+                                                  * total_bench_size)))
 
         return roster_spots
+
+    def get_available_budget(self):
+        return self.num_teams * self.team_budget - (self.k + self.team_def)
 
 
 def get_point_settings():
@@ -171,7 +190,7 @@ def get_point_settings():
     return {
         "passAtt": 0,
         "passComp": 0,
-        "passYds": .4,
+        "passYds": .04,
         "passTds": 4,
         "twoPts": 2,
         "sacks": -.5,  # Yahoo default: 0
@@ -187,16 +206,23 @@ def get_point_settings():
 
 
 class VBDModel:
-    def __init__(self, league):
+    def __init__(self, league, starter_budget_pct=.88):
         self.league = league
+        self.starter_budget_pct = starter_budget_pct
 
-    def calc_vbd(self, player_set):
+    def calc_vbd(self, player_set, ):
         starter_counts = self.league.get_starting_spots(player_set)
         roster_counts = self.league.get_roster_spots(starter_counts)
-        self.starter_vbd = 0
-        self.bench_vbd = 0
-        self.set_vbd(player_set.get_top_n(starter_counts), 'starter_vbd')
+        starters = player_set.get_top_n(starter_counts)
+        self.set_vbd(starters, 'starter_vbd')
         self.set_vbd(player_set.get_top_n(roster_counts), 'bench_vbd')
+
+        self.starter_vbd = 0
+        for position in starters:
+            for player in starters[position]:
+                self.starter_vbd += player.projected_points
+
+        self.bench_vbd = self.starter_vbd * (1 - self.starter_budget_pct)
 
     def set_vbd(self, list_of_players, target_field):
         for position in list_of_players:
@@ -206,14 +232,56 @@ class VBDModel:
                         player.projected_points - pos_base_vbd)
 
 
+class PriceModel:
+    def __init__(self, vbd_model, league):
+        self.vbd_model = vbd_model
+        self.league = league
+
+    def calc_base_prices(self, player_set):
+        bench_pf = self.get_bench_pf(player_set)
+        starter_pf = self.get_starter_pf(player_set, bench_pf)
+
+        for player in player_set.get_all():
+            player.base_price = (player.starter_vbd * starter_pf +
+                                 (player.bench_vbd - player.starter_vbd)
+                                 * bench_pf)
+
+    def get_bench_pf(self, player_set):
+        bench_budget = (self.league.get_available_budget()
+                        * (1 - self.vbd_model.starter_budget_pct))
+        bench_players = player_set.get_bench(league)
+        bench_vbd = 0
+        for position in bench_players:
+            for player in bench_players[position]:
+                bench_vbd += player.bench_vbd
+        return bench_budget / bench_vbd
+
+    def get_starter_pf(self, player_set, bench_pf):
+        starter_counts = league.get_starting_spots(player_set)
+        starters = player_set.get_top_n(starter_counts)
+        start_value_over_bench = 0
+        starter_vbd = 0
+        for position in starters:
+            player = starters[position][0]
+            start_value_over_bench += ((player.bench_vbd - player.starter_vbd)
+                                       * starter_counts[position])
+            for player in starters[position]:
+                starter_vbd += player.starter_vbd
+
+        starter_budget = ((self.league.get_available_budget()
+                          * self.vbd_model.starter_budget_pct)
+                          - start_value_over_bench * bench_pf)
+        return starter_budget / starter_vbd
+
+
 if __name__ == '__main__':
     player_set = PlayerSet()
     player_set.load_projection_stats_from_csv(sys.argv[1])
     player_set.calc_projected_points(get_point_settings())
-    print(player_set)
     league = League(get_point_settings(), num_teams=10, wr=3)
-    print(league.get_starting_spots(player_set))
     #  @TODO Take starting totals and calculate starter and bench vbd
-    vbdModel = VBDModel(league)
-    vbdModel.calc_vbd(player_set)
+    vbd_model = VBDModel(league, .88)
+    vbd_model.calc_vbd(player_set)
+    price_model = PriceModel(vbd_model, league)
+    price_model.calc_base_prices(player_set)
     print(player_set)
