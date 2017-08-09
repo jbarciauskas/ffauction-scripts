@@ -87,11 +87,15 @@ class League:
         for position in ["QB", "RB", "WR", "TE"]:
             total_starters += starter_counts[position]
 
-        for position in ["QB", "RB", "WR", "TE"]:
-            roster_spots[position] = int(
-                floor(starter_counts[position]
-                      + (float(starter_counts[position]) / float(total_starters)
-                         * total_bench_size)))
+        if user_settings.bench_allocation is None:
+            for position in ["QB", "RB", "WR", "TE"]:
+                roster_spots[position] = int(
+                    floor(starter_counts[position]
+                        + (float(starter_counts[position]) / float(total_starters)
+                            * total_bench_size)))
+        else:
+            for position in user_settings.bench_allocation:
+                roster_spots[position] += user_settings.bench_allocation[position]
         return roster_spots
 
     def get_bench(self):
@@ -100,7 +104,7 @@ class League:
         bench_players = {}
         for position in ["QB", "RB", "WR", "TE"]:
             bench_players[position] = getattr(player_set, position)[starter_counts[
-                position] - 1:roster_counts[position]]
+                position]:roster_counts[position]]
         return bench_players
 
 
@@ -126,7 +130,6 @@ class PlayerSet:
             return remaining[:flex]
 
     def get_top_n(self, position_counts):
-        print(position_counts)
         for list_of_players in [self.QB, self.RB, self.WR, self.TE]:
             list_of_players.sort(key=lambda player: player.projected_points,
                                  reverse=True)
@@ -134,8 +137,6 @@ class PlayerSet:
         for position in ["QB", "RB", "WR", "TE"]:
             top_n[position] = (getattr(self, position)
                                [:int(position_counts[position])])
-        for position in top_n:
-            print(position + ":\t" + str(len(top_n[position])))
         return top_n
 
     def load_projection_stats_from_csv(self, csv_filename):
@@ -172,7 +173,7 @@ class UserSettings:
 
     def __init__(self, scoring, num_teams=12, team_budget=200, qb=1, rb=2, wr=2,
                  te=1, flex=1, k=1, team_def=1, bench=6, flex_type="rb/wr/te",
-                 starter_budget_pct=.88):
+                 starter_budget_pct=.88, bench_allocation=None):
         self.scoring = scoring
         self.num_teams = num_teams
         self.team_budget = team_budget
@@ -186,6 +187,7 @@ class UserSettings:
         self.bench = bench
         self.flex_type = flex_type
         self.starter_budget_pct = starter_budget_pct
+        self.bench_allocation = bench_allocation
 
     def get_roster_size(self):
         return (self.get_num_starters() + self.bench)
@@ -285,5 +287,8 @@ if __name__ == '__main__':
     price_model = PriceModel()
     price_model.calc_base_prices(league)
 #    print(player_set)
-    print(sum(player.base_price for player in player_set.get_all()))
+    calculated_prices = sum(player.base_price for player in player_set.get_all())
+    print(calculated_prices)
     print(user_settings.get_available_budget())
+    print("Budget margin: %f" % ((calculated_prices
+                                  / user_settings.get_available_budget() - 1)))
