@@ -1,17 +1,19 @@
 import csv
+import json
 from math import floor
 import sys
 
 
 class Player:
-    def __init__(self, name):
-        self.name = name
+    def __init__(self):
         self.projected_points = 0
         self.starter_vbd = 0
         self.bench_vbd = 0
         self.base_price = 0
 
     def init_from_row(self, row):
+        self.name = row['player']
+        self.player_id = row['playerId']
         self.team = row['team']
         self.position = row['position']
 
@@ -40,6 +42,20 @@ class Player:
                                                self.team, self.projected_points,
                                                self.starter_vbd, self.bench_vbd,
                                                self.base_price)
+
+
+class PlayerPriceJsonEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, Player):
+            return {
+                "player_id": obj.player_id,
+                "name": obj.name,
+                "position": obj.position,
+                "team": obj.team,
+                "points": obj.projected_points,
+                "base_price": obj.base_price,
+            }
+        return super(PlayerPriceJsonEncoder, self).default(obj)
 
 
 class League:
@@ -91,8 +107,8 @@ class League:
             for position in ["QB", "RB", "WR", "TE"]:
                 roster_spots[position] = int(
                     floor(starter_counts[position]
-                        + (float(starter_counts[position]) / float(total_starters)
-                            * total_bench_size)))
+                          + (float(starter_counts[position]) / float(total_starters)
+                             * total_bench_size)))
         else:
             for position in user_settings.bench_allocation:
                 roster_spots[position] += user_settings.bench_allocation[position]
@@ -144,10 +160,9 @@ class PlayerSet:
             reader = csv.reader(stats_file)
             headers = next(reader)
             for row in reader:
-                name = row[0]
-                player = Player(name)
+                player = Player()
                 rowDict = {}
-                for i in range(1, len(row)):
+                for i in range(0, len(row)):
                     rowDict[headers[i]] = row[i]
 
                 player.init_from_row(rowDict)
@@ -288,7 +303,4 @@ if __name__ == '__main__':
     price_model.calc_base_prices(league)
 #    print(player_set)
     calculated_prices = sum(player.base_price for player in player_set.get_all())
-    print(calculated_prices)
-    print(user_settings.get_available_budget())
-    print("Budget margin: %f" % ((calculated_prices
-                                  / user_settings.get_available_budget() - 1)))
+    print(json.dumps(player_set.get_all(), cls=PlayerPriceJsonEncoder))
